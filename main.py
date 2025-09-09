@@ -6,7 +6,7 @@ from torchvision.transforms.functional import InterpolationMode
 from transformers import AutoTokenizer, AutoModel, BitsAndBytesConfig
 
 # ================== CONFIG ==================
-MODEL_ID = "OpenGVLab/InternVL3-9B"
+MODEL_ID = "OpenGVLab/InternVL3_5-8B"
 IN_DIR = Path("input")  # cartella sorgente
 OUT_DIR = Path("output")
 OUT_DIR.mkdir(exist_ok=True)

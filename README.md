@@ -1,6 +1,6 @@
-# OCR ROI + InternVL3-9B
+# OCR ROI
 
-Ritaglio automatico della regione di testo (ROI), miglioramento immagine e OCR con un VLM (InternVL3-9B) guidato da prompt. Il flusso usa EasyOCR per individuare il testo e scegliere l’orientamento migliore, poi applica CLAHE, upscaling e deskew, quindi passa la ROI al modello vision‑language per la trascrizione.
+Ritaglio automatico della regione di testo (ROI), miglioramento immagine e OCR con un VLM (InternVL3_5-8B) guidato da prompt. Il flusso usa EasyOCR per individuare il testo e scegliere l’orientamento migliore, poi applica CLAHE, upscaling e deskew, quindi passa la ROI al modello vision‑language per la trascrizione.
 
 ---
 
@@ -9,7 +9,7 @@ Ritaglio automatico della regione di testo (ROI), miglioramento immagine e OCR c
 * **Auto‑orientamento** dell’immagine in base a uno **score OCR** (più box, più confidenza, più area → punteggio maggiore).
 * **Ritaglio ROI** robusto unendo i box rilevati (dilatazione + componente con area massima).
 * **Enhance**: CLAHE sul canale Y, **upscale 2×** e **deskew ±20°**.
-* **OCR tramite VLM** (InternVL3‑9B) con **prompt rigido** e **allowlist** di caratteri.
+* **OCR tramite VLM** (InternVL3_5‑8B) con **prompt rigido** e **allowlist** di caratteri.
 * **Batch** su una cartella di input, salvataggio **ROI** e **testo** per ogni immagine.
 
 ---
@@ -80,7 +80,7 @@ mkdir -p input
 
 Nel file Python (sezione `CONFIG`):
 
-* `MODEL_ID = "OpenGVLab/InternVL3-9B"`
+* `MODEL_ID = "OpenGVLab/InternVL3_5‑8B"`
 * `IN_DIR = Path("input")`, `OUT_DIR = Path("output")`
 * `ALLOWLIST` caratteri ammessi
 * `ROT_ANGLES = [0, 90, 180, 270]`
