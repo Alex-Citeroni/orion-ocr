@@ -141,7 +141,7 @@ def load_model():
     model = AutoModel.from_pretrained(
         MODEL_ID,
         quantization_config=bnb,
-        torch_dtype=torch.float16,
+        dtype=torch.float16,
         low_cpu_mem_usage=True,
         use_flash_attn=False,
         trust_remote_code=True,
