@@ -1,28 +1,58 @@
+# =========================================================
+# MAIN.PY - Pipeline OCR con InternVL3 e EasyOCR
+# =========================================================
+# Scopo:
+#   - Leggere immagini da una cartella di input
+#   - Correggere rotazioni/orientamenti automatici
+#   - Croppare la regione contenente testo con EasyOCR
+#   - Migliorare qualità visiva (enhance + deskew)
+#   - Trascrivere il testo con il modello InternVL3-5 8B
+#   - Salvare risultati (immagine ROI + trascrizione OCR)
+#
+# Output:
+#   - File immagine con ROI rilevata
+#   - File di testo con trascrizione OCR
+#
+# Dipendenze principali:
+#   - OpenCV (cv2), EasyOCR, Transformers (InternVL3), Torch
+# =========================================================
+
 from pathlib import Path
 import cv2, torch, numpy as np
 from PIL import Image, ImageOps
 from torchvision import transforms as T
 from torchvision.transforms.functional import InterpolationMode
 from transformers import AutoTokenizer, AutoModel, BitsAndBytesConfig
+from easyocr import Reader
 
 # ================== CONFIG ==================
-MODEL_ID = "OpenGVLab/InternVL3_5-8B"
-IN_DIR = Path("input")  # cartella sorgente
-OUT_DIR = Path("output")
-OUT_DIR.mkdir(exist_ok=True)
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+MODEL_ID = "OpenGVLab/InternVL3_5-8B"  # modello VLM OCR
+IN_DIR = Path("input")  # cartella immagini sorgenti
+OUT_DIR = Path("output")  # cartella di output
+OUT_DIR.mkdir(exist_ok=True)  # crea output se non esiste
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"  # preferenza GPU
 
+# Caratteri ammessi dal modello OCR
 ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-/() ,:#"
-ROT_ANGLES = [0, 90, 180, 270]  # per auto-orientamento
+# Angoli da provare per auto-orientamento
+ROT_ANGLES = [0, 90, 180, 270]
 
 
 # ============== UTILS BASE ==============
 def read_bgr(path: Path):
+    """
+    Legge immagine da file:
+    - Usa PIL per rispettare eventuali metadati EXIF (rotazioni)
+    - Converte da RGB (PIL) a BGR (OpenCV standard)
+    """
     pil = ImageOps.exif_transpose(Image.open(path))
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
 
 def rotate90(bgr, angle):
+    """
+    Ruota un'immagine BGR di multipli di 90°.
+    """
     if angle == 0:
         return bgr
     if angle == 90:
@@ -34,8 +64,12 @@ def rotate90(bgr, angle):
     return bgr
 
 
-# punteggio OCR per scegliere la rotazione migliore (più box & conf & lunghezza)
 def ocr_score(bgr, reader):
+    """
+    Valuta la qualità di una rotazione tramite OCR:
+    - Esegue rilevamento testo con EasyOCR
+    - Calcola uno score proporzionale a confidenza, lunghezza del testo e area del box
+    """
     det = reader.readtext(bgr, detail=1, paragraph=False, allowlist=ALLOWLIST)
     if not det:
         return 0.0
@@ -47,6 +81,10 @@ def ocr_score(bgr, reader):
 
 
 def best_rotation(bgr, reader):
+    """
+    Trova la rotazione migliore tra 0°, 90°, 180°, 270°.
+    Restituisce immagine ruotata, angolo scelto e punteggio massimo.
+    """
     best_a, best_s, best_img = 0, float("-inf"), bgr
     for a in ROT_ANGLES:
         img = rotate90(bgr, a)
@@ -57,6 +95,11 @@ def best_rotation(bgr, reader):
 
 
 def enhance(bgr):
+    """
+    Migliora leggibilità testo:
+    - Equalizzazione adattiva (CLAHE) sul canale luminosità Y
+    - Upscaling x2 con interpolazione bicubica
+    """
     yuv = cv2.cvtColor(bgr, cv2.COLOR_BGR2YUV)
     yuv[:, :, 0] = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(
         yuv[:, :, 0]
@@ -66,6 +109,11 @@ def enhance(bgr):
 
 
 def deskew_safe(bgr):
+    """
+    Raddrizza (deskew) il testo se inclinato:
+    - Usa bounding box minima su pixel bianchi
+    - Corregge angolo se entro ±20° (per evitare rotazioni spurie)
+    """
     g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     g = cv2.bitwise_not(g)
     g = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
@@ -74,7 +122,6 @@ def deskew_safe(bgr):
         return bgr
     angle = cv2.minAreaRect(coords)[-1]
     angle = -(90 + angle) if angle < -45 else -angle
-    # limita a ±20° per evitare giravolte
     angle = float(np.clip(angle, -20, 20))
     (h, w) = bgr.shape[:2]
     M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
@@ -85,9 +132,18 @@ def deskew_safe(bgr):
 
 # ============== ROI CON EASYOCR ==============
 def crop_with_easyocr(path, reader):
+    """
+    Estrae ROI (Region of Interest) contenente testo:
+      1) Trova orientamento migliore dell'immagine intera
+      2) Esegue OCR per localizzare box di testo
+      3) Dilata mask e trova componente con area massima
+      4) Ritaglia ROI e migliora (enhance + deskew)
+      5) Trova nuovamente orientamento migliore sulla ROI
+    Restituisce immagine PIL della ROI e angoli di rotazione usati.
+    """
     bgr0 = read_bgr(path)
 
-    # 1) scegli orientamento migliore PRIMA del crop
+    # 1) Orientamento migliore prima del crop
     bgr, ang_used, _ = best_rotation(bgr0, reader)
 
     H, W = bgr.shape[:2]
@@ -97,13 +153,13 @@ def crop_with_easyocr(path, reader):
     heights = []
     boxes = []
     for r in det:
-        box, text = r[0], r[1]
+        box, _ = r[0], r[1]
         conf = r[2] if len(r) > 2 else 1.0
         poly = np.array(box).astype(int)
         wbox = max(np.linalg.norm(poly[1] - poly[0]), np.linalg.norm(poly[2] - poly[3]))
         hbox = max(np.linalg.norm(poly[3] - poly[0]), np.linalg.norm(poly[2] - poly[1]))
         area = wbox * hbox
-        if conf >= 0.3 and area > 150:
+        if conf >= 0.3 and area > 150:  # accetta box affidabili e grandi
             cv2.fillPoly(mask, [poly], 255)
             boxes.append(poly)
             heights.append(hbox)
@@ -111,25 +167,26 @@ def crop_with_easyocr(path, reader):
     if not boxes:
         roi = bgr
     else:
+        # Calcolo bounding box più grande tramite morfologia
         med_h = np.median(heights)
         kx = int(max(25, 3.5 * med_h))
         ky = int(max(8, 1.5 * med_h))
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky))
         mask_d = cv2.dilate(mask, kernel, iterations=1)
-        num, labels, stats, _ = cv2.connectedComponentsWithStats(mask_d, connectivity=8)
+        _, _, stats, _ = cv2.connectedComponentsWithStats(mask_d, connectivity=8)
         best_id = np.argmax(stats[1:, cv2.CC_STAT_AREA]) + 1
         x, y, w, h, _ = stats[best_id]
-        pad = int(0.12 * max(w, h))
+        pad = int(0.12 * max(w, h))  # padding aggiuntivo
         x0 = max(0, x - pad)
         y0 = max(0, y - pad)
         x1 = min(W, x + w + pad)
         y1 = min(H, y + h + pad)
         roi = bgr[y0:y1, x0:x1]
 
-    # 2) enhance + deskew
+    # 2) Migliora ROI
     roi = deskew_safe(enhance(roi))
 
-    # 3) scegli orientamento migliore SULLA ROI
+    # 3) Orientamento migliore sulla ROI
     roi_best, ang_roi, _ = best_rotation(roi, reader)
 
     return Image.fromarray(cv2.cvtColor(roi_best, cv2.COLOR_BGR2RGB)), ang_used, ang_roi
@@ -137,6 +194,10 @@ def crop_with_easyocr(path, reader):
 
 # ============== MODEL ==============
 def load_model():
+    """
+    Carica modello InternVL3 in quantizzazione 8bit (per risparmio memoria).
+    Restituisce coppia (modello, tokenizer).
+    """
     bnb = BitsAndBytesConfig(load_in_8bit=True)
     model = AutoModel.from_pretrained(
         MODEL_ID,
@@ -153,7 +214,7 @@ def load_model():
     return model, tok
 
 
-# preprocess immagine singola per InternVL3 (no tiling)
+# Preprocessing immagine singola per InternVL3
 TFM = T.Compose(
     [
         T.Resize((448, 448), interpolation=InterpolationMode.BICUBIC),
@@ -164,6 +225,12 @@ TFM = T.Compose(
 
 
 def vlm_ocr(model, tokenizer, pil_img: Image.Image) -> str:
+    """
+    Esegue OCR con InternVL3:
+    - Converte immagine in tensore normalizzato
+    - Fornisce prompt esplicito di OCR
+    - Genera testo senza sampling (deterministico)
+    """
     pixel_values = TFM(pil_img).unsqueeze(0).to(dtype=torch.float16, device=DEVICE)
     prompt = (
         "<image>\nYou are a strict OCR engine. Transcribe EXACTLY the printed text, "
@@ -177,12 +244,19 @@ def vlm_ocr(model, tokenizer, pil_img: Image.Image) -> str:
 
 # ============== BATCH DRIVER ==============
 def process_folder(in_dir: Path):
+    """
+    Esegue pipeline OCR su tutte le immagini in una cartella:
+      - Filtra formati supportati
+      - Carica EasyOCR (reader) e modello InternVL3
+      - Per ciascuna immagine:
+          * Estrae ROI con EasyOCR
+          * Salva immagine ROI
+          * Esegue OCR con InternVL3
+          * Salva testo riconosciuto
+    """
     exts = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp", "*.tif", "*.tiff")
     files = sorted([p for ext in exts for p in in_dir.glob(ext)])
     assert files, f"Nessuna immagine in {in_dir.resolve()}"
-
-    # init una volta
-    from easyocr import Reader
 
     reader = Reader(["en"], gpu=torch.cuda.is_available())
 
@@ -206,6 +280,12 @@ def process_folder(in_dir: Path):
             print(f"  ✗ errore su {img_path.name}: {e}")
 
 
+# ============== MAIN ==============
 if __name__ == "__main__":
+    """
+    Entry point:
+    - Avvia processo batch OCR sulla cartella di input
+    - Stampa riepilogo a console
+    """
     process_folder(IN_DIR)
     print(f"\nDone. Output in: {OUT_DIR.resolve()}")
