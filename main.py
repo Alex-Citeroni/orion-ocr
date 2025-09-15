@@ -1,22 +1,3 @@
-# =========================================================
-# MAIN.PY - Pipeline OCR con InternVL3 e EasyOCR
-# =========================================================
-# Scopo:
-#   - Leggere immagini da una cartella di input
-#   - Correggere rotazioni/orientamenti automatici
-#   - Croppare la regione contenente testo con EasyOCR
-#   - Migliorare qualità visiva (enhance + deskew)
-#   - Trascrivere il testo con il modello InternVL3-5 8B
-#   - Salvare risultati (immagine ROI + trascrizione OCR)
-#
-# Output:
-#   - File immagine con ROI rilevata
-#   - File di testo con trascrizione OCR
-#
-# Dipendenze principali:
-#   - OpenCV (cv2), EasyOCR, Transformers (InternVL3), Torch
-# =========================================================
-
 from pathlib import Path
 import cv2, torch, numpy as np
 from PIL import Image, ImageOps
